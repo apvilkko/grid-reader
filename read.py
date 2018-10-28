@@ -24,7 +24,11 @@ TEST_GRID6 = 27
 TEST_GRID7 = 38
 TEST_GRID8 = 49
 # inputPages = range(8, 98)
-inputPages = [TEST_GRID1, TEST_GRID2, TEST_GRID3, TEST_GRID4]
+inputPages = [
+    # TEST_GRID1,
+    # TEST_GRID2,
+    TEST_GRID3, TEST_GRID4
+]
 inputs = ['page-{:02d}.png'.format(x) for x in inputPages]
 
 NUM_CELLS_Y = 12
@@ -46,6 +50,15 @@ TAM = 10
 gData = {'patterns': []}
 
 debugBlocks = []
+
+
+def resize_image_viewer():
+    mng = plt.get_current_fig_manager()
+    # mng.frame.Maximize(True)
+    maxSize = mng.window.maxsize()
+    maxSize = (maxSize[0]*0.5, maxSize[1])
+    mng.resize(*maxSize)
+    mng.window.wm_geometry('-1000-0')
 
 
 def formatData(data):
@@ -73,9 +86,7 @@ def show_image(img, index, total):
 def show_results(images):
     for i, image in enumerate(images):
         show_image(image, i, len(images))
-    mng = plt.get_current_fig_manager()
-    # mng.frame.Maximize(True)
-    mng.resize(*mng.window.maxsize())
+    resize_image_viewer()
     plt.show()
 
 
@@ -98,6 +109,10 @@ def deltas(pt1, pt0):
     return np.abs(dx), np.abs(dy)
 
 
+def distance(pt1, pt0):
+    return np.sqrt((pt1[0]-pt0[0])**2+(pt1[1]-pt0[1])**2)
+
+
 def ri(x):
     return int(round(x))
 
@@ -107,28 +122,63 @@ def get_approx_rect(approx, imgWidth, imgHeight):
     right = np.amax(approx[:, :, 0])
     top = np.amin(approx[:, :, 1])
     bottom = np.amax(approx[:, :, 1])
-    skewLimit = imgHeight * GRID_HEIGHT / 20
+    skewLimit = imgHeight * GRID_HEIGHT * 0.02
     shrink = imgHeight * GRID_HEIGHT * 0.01
+    minPathLen = imgHeight * GRID_HEIGHT * 0.05
     # special handling to get rid of bad corners
     dim = len(approx)
     print('dim', dim)
     skewed = [deltas(approx[(i-1) % dim][0], approx[i][0]) for i in range(0, dim)]
+    dist = [distance(approx[(i-1) % dim][0], approx[i][0]) for i in range(0, dim)]
+    bins = 128
+    topBins = ri(bins/8)
+    histX = np.histogram(approx[:, :, 0], bins)
+    histY = np.histogram(approx[:, :, 1], bins)
+    left = ri(histX[1][np.argmax(histX[0][:topBins])])
+    top = ri(histY[1][np.argmax(histY[0][:topBins])])
+    gridHeight = GRID_HEIGHT * imgHeight
+
+    # plt.hist(approx[:, :, 0], bins)
+    # resize_image_viewer()
+    # plt.show()
+
+    print('topBins', histX[0][:topBins])
+    print('most likely left', left)
+    print('most likely top', top)
+    print('most likely bottom', top + gridHeight)
     good = [[], []]
+    mins = [np.argmin(skewed[i]) for i in range(0, dim)]
     for i in range(0, dim):
         skew = skewed[i]
-        min = np.argmin(skew)
         max = np.argmax(skew)
-        if skew[min] < skewLimit:
-            good[max].append(approx[i][0][max])
-            good[max].append(approx[(i-1) % dim][0][max])
-    if (len(good[0])):
+        min = mins[i]
+        print('skew', skew, skew[min], approx[i], skewLimit, dist[i])
+        longEnough = dist[i] > minPathLen
+        val1 = approx[i][0][max]
+        val2 = approx[(i-1) % dim][0][max]
+        if skew[min] < skewLimit and longEnough and (
+            (max == 1 and val1 >= top and val2 >= top) or (
+            max == 0 and val1 >= left and val2 >= top)):
+            good[max].append(val1)
+            good[max].append(val2)
+    if len(good[0]) and len(good[1]):
         print('good', good)
-        left = ri(np.amin(good[0]) + shrink)
+        # left = ri(np.amin(good[0]) + shrink)
         right = ri(np.amax(good[0]) - shrink)
-        top = ri(np.amin(good[1]) + shrink)
+        # top = ri(np.amin(good[1]) + shrink)
         bottom = ri(np.amax(good[1]) - shrink*2)
+        delta = bottom - top
+        if gridHeight - delta > gridHeight/10:
+            bottom += ri(gridHeight - delta)
+        elif delta - gridHeight > gridHeight/10:
+            bottom -= ri(delta - gridHeight)
     else:
-        print('no good corners', approx)
+        print('no good corners')
+        for i in range(0, dim):
+            min = mins[i]
+            skew = skewed[i][min]
+            print('  ', approx[i], min, skew)
+
     return left, right, top, bottom
 
 
@@ -245,7 +295,8 @@ def process_grid(approx, img, gray):
             center = (ri(x + cellWidth/2), ri(y + cellHeight/2))
             # print(center, x, y, top, left, bottom, right)
             # Shift left because flam could be detected as regular hit
-            value = VALUE_OFF if gray[center[1], center[0] - shiftLeft] > 128 else VALUE_ON
+
+            value = detect_value(gray, center, shiftLeft)
             previousHasValue = i > 0 and values[i - 1]['value'] != VALUE_OFF
             if value and has_flam(center, i, j, gray, cellWidth, cellHeight, previousHasValue):
                 value = VALUE_FLAM
@@ -258,6 +309,17 @@ def process_grid(approx, img, gray):
                     center[0], center[1]), (center[0]+3, center[1]+3), (0, 0, 255), 6)
             values.append({'value': value})
     return dst
+
+
+def detect_value(gray, center, shift):
+    ret = VALUE_OFF
+    val = np.median(gray[
+        ri(center[1]-shift/2):ri(center[1]+shift/2),
+        ri(center[0]-shift):center[0],
+    ])
+    if val < 127:
+        ret = VALUE_ON
+    return ret
 
 
 def angle(line):
@@ -296,7 +358,13 @@ def process_page(inputTuple):
     # enhanced = cv2.dilate(enhanced, kernel, 1)
     # _, result = cv2.threshold(gray, 0, 255, 0)
     ret, thresh = cv2.threshold(enhanced, 170, 255, 0)
+
+    # kernel = np.ones((3,3),np.uint8)
+    # thresh = cv2.erode(thresh,kernel,iterations = 1)
+    # thresh = cv2.dilate(thresh,kernel,iterations = 1)
+
     # plt.imshow(thresh)
+    # resize_image_viewer()
     # plt.show()
     image, contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     # print(hierarchy, len(hierarchy[0]), len(contours))
@@ -318,13 +386,15 @@ def process_page(inputTuple):
 
     # dst = cv2.drawContours(img, contours, -1, (0,255,0), 2)
     for i, cnt in enumerate(contours):
-        epsilon = 0.03*cv2.arcLength(cnt, True)
+        # epsilon = 0.03*cv2.arcLength(cnt, True)
+        # epsilon = GRID_WIDTH * imgWidth * 0.009
+        epsilon = GRID_WIDTH * imgWidth * 0.02
         approx = cv2.approxPolyDP(cnt, epsilon, True)
         if True or len(approx) == 4:  # can't trust that approx is perfectly 4 cornered
             area = cv2.contourArea(cnt)
             areaSatisfied = area > areaMin and area < areaMax
             if areaSatisfied:
-                dst = cv2.drawContours(dst, [approx], -1, (255,0,0), 3)
+                dst = cv2.drawContours(dst, [approx], -1, (255,100,0), 3)
             if hierarchy[0][i][2] > -1 and areaSatisfied:
                 dst = process_grid(approx, img, gray)
     return dst
