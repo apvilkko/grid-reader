@@ -3,14 +3,29 @@ import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 
-inputPath = '/media/sf_vboxshare/testdata/'
-inputs = [
-    'Capture.PNG',
-    'Capture2.PNG',
-    'Capture3.PNG',
-    'Capture4.PNG',
-    'Capture5.PNG'
-]
+# inputPath = '/media/sf_vboxshare/testdata/'
+inputPath = 'testdata/'
+outputPath = 'output/'
+# inputs = [
+#     'Capture.PNG',
+#     'Capture2.PNG',
+#     'Capture3.PNG',
+#     'Capture4.PNG',
+#     'Capture5.PNG'
+# ]
+TEST_FLAM1 = 15
+TEST_FLAM2 = 44
+TEST_GRID1 = 18
+TEST_GRID2 = 19
+TEST_GRID3 = 20
+TEST_GRID4 = 23
+TEST_GRID5_TAM = 26
+TEST_GRID6 = 27
+TEST_GRID7 = 38
+TEST_GRID8 = 49
+# inputPages = range(8, 98)
+inputPages = [TEST_GRID1, TEST_GRID2, TEST_GRID3, TEST_GRID4]
+inputs = ['page-{:02d}.png'.format(x) for x in inputPages]
 
 NUM_CELLS_Y = 12
 
@@ -24,11 +39,13 @@ VALUE_ON = 1
 VALUE_OFF = 0
 VALUE_FLAM = 2
 
-FLAM_THRESHOLD = 230
+DEFAULTS = ['AC', 'RD', 'CH', 'OH', 'HT', 'MT', 'SD', 'RS', 'LT', 'CP', 'CB', 'BD']
+CY = 1
+TAM = 10
 
 gData = {'patterns': []}
 
-flamBlocks = []
+debugBlocks = []
 
 
 def formatData(data):
@@ -62,6 +79,11 @@ def show_results(images):
     plt.show()
 
 
+def write_outputs(images):
+    for i, image in enumerate(images):
+        cv2.imwrite('{}out{:02d}.png'.format(outputPath, i), image)
+
+
 def read_image(input):
     return cv2.imread(inputPath + input, cv2.IMREAD_COLOR)
 
@@ -88,27 +110,29 @@ def get_approx_rect(approx, imgWidth, imgHeight):
     skewLimit = imgHeight * GRID_HEIGHT / 20
     shrink = imgHeight * GRID_HEIGHT * 0.01
     # special handling to get rid of bad corners
-    if len(approx) == 4:
-        skewed = [deltas(approx[(i-1) % 4][0], approx[i][0]) for i in range(0, 4)]
-        good = [[], []]
-        for i in range(0, 4):
-            skew = skewed[i]
-            min = np.argmin(skew)
-            max = np.argmax(skew)
-            if skew[min] < skewLimit:
-                good[max].append(approx[i][0][max])
-                good[max].append(approx[(i-1) % 4][0][max])
-        if (len(good[0])):
-            left = ri(np.amin(good[0]) + shrink)
-            right = ri(np.amax(good[0]) - shrink)
-            top = ri(np.amin(good[1]) + shrink)
-            bottom = ri(np.amax(good[1]) - shrink*2)
-        else:
-            print('no good corners', approx)
+    dim = len(approx)
+    print('dim', dim)
+    skewed = [deltas(approx[(i-1) % dim][0], approx[i][0]) for i in range(0, dim)]
+    good = [[], []]
+    for i in range(0, dim):
+        skew = skewed[i]
+        min = np.argmin(skew)
+        max = np.argmax(skew)
+        if skew[min] < skewLimit:
+            good[max].append(approx[i][0][max])
+            good[max].append(approx[(i-1) % dim][0][max])
+    if (len(good[0])):
+        print('good', good)
+        left = ri(np.amin(good[0]) + shrink)
+        right = ri(np.amax(good[0]) - shrink)
+        top = ri(np.amin(good[1]) + shrink)
+        bottom = ri(np.amax(good[1]) - shrink*2)
+    else:
+        print('no good corners', approx)
     return left, right, top, bottom
 
 
-def hasFlam(center, idx, yidx, gray, cellWidth, cellHeight, previousHasValue):
+def has_flam(center, idx, yidx, gray, cellWidth, cellHeight, previousHasValue):
     # if idx == 0:
     #    # First cell needs special handling since flam marker is outside the grid
     #    return False
@@ -144,11 +168,45 @@ def hasFlam(center, idx, yidx, gray, cellWidth, cellHeight, previousHasValue):
         kernelMean = np.mean(kernelBlock.reshape(-1))
         kernelCheck = kernelVariance > 30 and kernelMean < 240
         isFlam = variance > 100 and mean < 240 and kernelCheck
-        # print(mean[0], len(flamBlocks))
+        # print(mean[0], len(debugBlocks))
         if isFlam:
-            flamBlocks.append(prevBlock)
-            print('flam', idx, yidx, variance, mean, kernelVariance, kernelMean)
+            # debugBlocks.append(prevBlock)
+            # print('flam', idx, yidx, variance, mean, kernelVariance, kernelMean)
             return True
+
+
+def get_instruments(gray, left, right, top, bottom, cellWidth, cellHeight):
+    instruments = DEFAULTS[:]
+    cyBlock = gray[
+        ri(top + CY*cellHeight):ri(top + (CY+1)*cellHeight),
+        ri(left - 3*cellWidth):ri(left-0.3*cellWidth)]
+    _, thresh = cv2.threshold(cyBlock, 127, 255, cv2.THRESH_BINARY)
+    image, contours, hierarchy = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    areaMin = (cellHeight * 0.3)**2
+    areaMax = (cellHeight*0.53)**2
+    contours = [x for x in contours if areaMin < cv2.contourArea(x) < areaMax]
+    # for i, cnt in enumerate(contours):
+    #    area = cv2.contourArea(cnt)
+    #    print('area', area, areaMin, areaMax)
+    # cyBlock = cv2.drawContours(cyBlock, contours, -1, (128, 128, 128), 1)
+    if len(contours) == 3:
+        # debugBlocks.append(cyBlock)
+        instruments[CY] = 'CR'
+        # print('cyBlock', mean, variance)
+    yShift = ri(cellHeight*0.2)
+    tamBlock = gray[
+        ri(top + yShift + TAM*cellHeight):ri(top + yShift + (TAM+1)*cellHeight),
+        ri(left - 3*cellWidth):ri(left-0.3*cellWidth)]
+    _, thresh = cv2.threshold(tamBlock, 127, 255, cv2.THRESH_BINARY)
+    image, contours, hierarchy = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    areaMin = (cellHeight * 0.2)**2
+    areaMax = cellHeight**2
+    contours = [x for x in contours if areaMin < cv2.contourArea(x) < areaMax]
+    # tamBlock = cv2.drawContours(tamBlock, contours, -1, (128, 128, 128), 1)
+    if len(contours) > 2:
+        instruments[TAM] = 'TA'
+        debugBlocks.append(tamBlock)
+    return instruments
 
 
 def process_grid(approx, img, gray):
@@ -169,6 +227,13 @@ def process_grid(approx, img, gray):
     cellHeight = height / NUM_CELLS_Y
     trackData = {'tracks': []}
     gData['patterns'].append(trackData)
+    trackData['instruments'] = get_instruments(
+        gray, left, right, top, bottom, cellWidth, cellHeight)
+    cv2.putText(
+        dst,
+        str(trackData['instruments'][CY]) + ',' + str(trackData['instruments'][TAM]),
+        (left - shiftLeft * 2, top - shiftLeft),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 3)
     for j in range(0, NUM_CELLS_Y):
         trackData['tracks'].append({'values': []})
         values = trackData['tracks'][j]['values']
@@ -182,7 +247,7 @@ def process_grid(approx, img, gray):
             # Shift left because flam could be detected as regular hit
             value = VALUE_OFF if gray[center[1], center[0] - shiftLeft] > 128 else VALUE_ON
             previousHasValue = i > 0 and values[i - 1]['value'] != VALUE_OFF
-            if value and hasFlam(center, i, j, gray, cellWidth, cellHeight, previousHasValue):
+            if value and has_flam(center, i, j, gray, cellWidth, cellHeight, previousHasValue):
                 value = VALUE_FLAM
             if value == VALUE_ON:
                 dst = cv2.line(dst, (center[0], center[1]), (center[0]+2, center[1]+2), color, 6)
@@ -222,17 +287,45 @@ def process_page(inputTuple):
     img, gray = inputTuple
     imgHeight, imgWidth, _ = img.shape
     areaMin, areaMax = area_minmax((imgWidth, imgHeight))
-    _, result = cv2.threshold(gray, 0, 255, 0)
-    ret, thresh = cv2.threshold(gray, 127, 255, 0)
+    # cv2.equalizeHist(gray)
+    enhanced = gray
+    # contrast = 1.2
+    # brightness = 10
+    # enhanced = cv2.addWeighted(gray, contrast, gray, 0, brightness)
+    # kernel = np.ones((3,3),np.uint8)
+    # enhanced = cv2.dilate(enhanced, kernel, 1)
+    # _, result = cv2.threshold(gray, 0, 255, 0)
+    ret, thresh = cv2.threshold(enhanced, 170, 255, 0)
+    # plt.imshow(thresh)
+    # plt.show()
     image, contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    # dst = cv2.drawContours(img, contours, -1, (0,255,0), 2)
     # print(hierarchy, len(hierarchy[0]), len(contours))
+    dst = img
+
+    # edges = cv2.Canny(gray, 100, 200, apertureSize=3)
+    # theta = np.pi/180
+    # threshold = 18
+    # minLineLen = ri(imgWidth / 3)
+    # lines = cv2.HoughLinesP(edges, 1, theta, threshold, 0, minLineLen, 20)
+    # a,b,c = lines.shape
+    # for i in range(a):
+    #     dst = cv2.line(edges, (
+    #         lines[i][0][0], lines[i][0][1]), (
+    #         lines[i][0][2], lines[i][0][3]), (0, 0, 255), 3, cv2.LINE_AA)
+    #
+    # show_image(dst, 0, 1)
+    # plt.show()
+
+    # dst = cv2.drawContours(img, contours, -1, (0,255,0), 2)
     for i, cnt in enumerate(contours):
         epsilon = 0.03*cv2.arcLength(cnt, True)
         approx = cv2.approxPolyDP(cnt, epsilon, True)
         if True or len(approx) == 4:  # can't trust that approx is perfectly 4 cornered
             area = cv2.contourArea(cnt)
-            if hierarchy[0][i][2] > -1 and area > areaMin and area < areaMax:
+            areaSatisfied = area > areaMin and area < areaMax
+            if areaSatisfied:
+                dst = cv2.drawContours(dst, [approx], -1, (255,0,0), 3)
+            if hierarchy[0][i][2] > -1 and areaSatisfied:
                 dst = process_grid(approx, img, gray)
     return dst
 
@@ -242,4 +335,5 @@ process = compose(process_page, to_gray, straighten, read_image)
 result = [process(input) for input in inputs]
 # formatData(gData)
 show_results(result)
-show_results(flamBlocks[:9])
+# write_outputs(result)
+# show_results(debugBlocks[:9])
